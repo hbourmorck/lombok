@@ -84,8 +84,17 @@ public @interface Setter {
 	 */
 	AnyAnnotation[] onParam() default {};
 
+	/**
+	 * If true, the setter will be generated as a property setter. This means that the setter will generate a firePropertyChange event.
+	 *
+	 * @return true if the setter should be generated as a property setter.
+	 */
 	boolean property() default false;
 
+	/**
+	 * If the property name is different from the field name, you can specify it here.
+	 * @return The name of the property.
+	 */
 	String propertyName() default "";
 	/**
 	  * Placeholder annotation to enable the placement of annotations on the generated code.
