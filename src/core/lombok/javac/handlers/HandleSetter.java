@@ -25,6 +25,7 @@ import static lombok.javac.Javac.*;
 import static lombok.core.handlers.HandlerUtil.*;
 import static lombok.javac.handlers.JavacHandlerUtil.*;
 
+import java.util.Arrays;
 import java.util.Collection;
 
 import lombok.AccessLevel;
@@ -60,7 +61,7 @@ import com.sun.tools.javac.util.Name;
 public class HandleSetter extends JavacAnnotationHandler<Setter> {
 	private static final String SETTER_NODE_NOT_SUPPORTED_ERR = "@Setter is only supported on a class or a field.";
 	
-	public void generateSetterForType(JavacNode typeNode, JavacNode errorNode, AccessLevel level, boolean checkForTypeLevelSetter, List<JCAnnotation> onMethod, List<JCAnnotation> onParam) {
+	public void generateSetterForType(JavacNode typeNode, JavacNode errorNode, AccessLevel level, boolean checkForTypeLevelSetter, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, boolean property, String propertyName) {
 		if (checkForTypeLevelSetter) {
 			if (hasAnnotation(Setter.class, typeNode)) {
 				//The annotation will make it happen, so we can skip it.
@@ -83,7 +84,7 @@ public class HandleSetter extends JavacAnnotationHandler<Setter> {
 			//Skip final fields.
 			if ((fieldDecl.mods.flags & Flags.FINAL) != 0) continue;
 			
-			generateSetterForField(field, errorNode, level, onMethod, onParam);
+			generateSetterForField(field, errorNode, level, onMethod, onParam, property, propertyName);
 		}
 	}
 	
@@ -102,13 +103,13 @@ public class HandleSetter extends JavacAnnotationHandler<Setter> {
 	 * @param fieldNode The node representing the field you want a setter for.
 	 * @param pos The node responsible for generating the setter (the {@code @Data} or {@code @Setter} annotation).
 	 */
-	public void generateSetterForField(JavacNode fieldNode, JavacNode sourceNode, AccessLevel level, List<JCAnnotation> onMethod, List<JCAnnotation> onParam) {
+	public void generateSetterForField(JavacNode fieldNode, JavacNode sourceNode, AccessLevel level, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, boolean property, String propertyName) {
 		if (hasAnnotation(Setter.class, fieldNode)) {
 			//The annotation will make it happen, so we can skip it.
 			return;
 		}
 		
-		createSetterForField(level, fieldNode, sourceNode, false, onMethod, onParam);
+		createSetterForField(level, fieldNode, sourceNode, false, onMethod, onParam, property, propertyName);
 	}
 	
 	@Override public void handle(AnnotationValues<Setter> annotation, JCAnnotation ast, JavacNode annotationNode) {
@@ -130,24 +131,27 @@ public class HandleSetter extends JavacAnnotationHandler<Setter> {
 		if (!onParam.isEmpty()) {
 			handleFlagUsage(annotationNode, ConfigurationKeys.ON_X_FLAG_USAGE, "@Setter(onParam=...)");
 		}
-		
+
+		boolean property = annotation.getInstance().property();
+		String propertyName = annotation.getInstance().propertyName();
+
 		switch (node.getKind()) {
 		case FIELD:
-			createSetterForFields(level, fields, annotationNode, true, onMethod, onParam);
+			createSetterForFields(level, fields, annotationNode, true, onMethod, onParam, property, propertyName);
 			break;
 		case TYPE:
-			generateSetterForType(node, annotationNode, level, false, onMethod, onParam);
+			generateSetterForType(node, annotationNode, level, false, onMethod, onParam, property, "");
 			break;
 		}
 	}
 	
-	public void createSetterForFields(AccessLevel level, Collection<JavacNode> fieldNodes, JavacNode errorNode, boolean whineIfExists, List<JCAnnotation> onMethod, List<JCAnnotation> onParam) {
+	public void createSetterForFields(AccessLevel level, Collection<JavacNode> fieldNodes, JavacNode errorNode, boolean whineIfExists, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, boolean property, String propertyName) {
 		for (JavacNode fieldNode : fieldNodes) {
-			createSetterForField(level, fieldNode, errorNode, whineIfExists, onMethod, onParam);
+			createSetterForField(level, fieldNode, errorNode, whineIfExists, onMethod, onParam, property, propertyName);
 		}
 	}
 	
-	public void createSetterForField(AccessLevel level, JavacNode fieldNode, JavacNode sourceNode, boolean whineIfExists, List<JCAnnotation> onMethod, List<JCAnnotation> onParam) {
+	public void createSetterForField(AccessLevel level, JavacNode fieldNode, JavacNode sourceNode, boolean whineIfExists, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, boolean property, String propertyName) {
 		if (fieldNode.getKind() != Kind.FIELD) {
 			fieldNode.addError(SETTER_NODE_NOT_SUPPORTED_ERR);
 			return;
@@ -187,19 +191,19 @@ public class HandleSetter extends JavacAnnotationHandler<Setter> {
 		
 		long access = toJavacModifier(level) | (fieldDecl.mods.flags & Flags.STATIC);
 		
-		JCMethodDecl createdSetter = createSetter(access, fieldNode, fieldNode.getTreeMaker(), sourceNode, onMethod, onParam);
+		JCMethodDecl createdSetter = createSetter(access, fieldNode, fieldNode.getTreeMaker(), sourceNode, onMethod, onParam, property, propertyName);
 		injectMethod(fieldNode.up(), createdSetter);
 	}
 	
-	public static JCMethodDecl createSetter(long access, JavacNode field, JavacTreeMaker treeMaker, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam) {
+	public static JCMethodDecl createSetter(long access, JavacNode field, JavacTreeMaker treeMaker, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, boolean property, String propertyName) {
 		AnnotationValues<Accessors> accessors = JavacHandlerUtil.getAccessorsForField(field);
 		String setterName = toSetterName(field, accessors);
 		boolean returnThis = shouldReturnThis(field, accessors);
-		JCMethodDecl setter = createSetter(access, false, field, treeMaker, setterName, null, null, returnThis, source, onMethod, onParam);
+		JCMethodDecl setter = createSetter(access, false, field, treeMaker, setterName, null, null, returnThis, source, onMethod, onParam, property, propertyName);
 		return setter;
 	}
 	
-	public static JCMethodDecl createSetter(long access, boolean deprecate, JavacNode field, JavacTreeMaker treeMaker, String setterName, Name paramName, Name booleanFieldToSet, boolean shouldReturnThis, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam) {
+	public static JCMethodDecl createSetter(long access, boolean deprecate, JavacNode field, JavacTreeMaker treeMaker, String setterName, Name paramName, Name booleanFieldToSet, boolean shouldReturnThis, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, boolean property, String propertyName) {
 		JCExpression returnType = null;
 		JCReturn returnStatement = null;
 		if (shouldReturnThis) {
@@ -208,10 +212,10 @@ public class HandleSetter extends JavacAnnotationHandler<Setter> {
 			returnStatement = treeMaker.Return(treeMaker.Ident(field.toName("this")));
 		}
 		
-		return createSetter(access, deprecate, field, treeMaker, setterName, paramName, booleanFieldToSet, returnType, returnStatement, source, onMethod, onParam);
+		return createSetter(access, deprecate, field, treeMaker, setterName, paramName, booleanFieldToSet, returnType, returnStatement, source, onMethod, onParam, property, propertyName);
 	}
 	
-	public static JCMethodDecl createSetterWithRecv(long access, boolean deprecate, JavacNode field, JavacTreeMaker treeMaker, String setterName, Name paramName, Name booleanFieldToSet, boolean shouldReturnThis, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, JCVariableDecl recv) {
+	public static JCMethodDecl createSetterWithRecv(long access, boolean deprecate, JavacNode field, JavacTreeMaker treeMaker, String setterName, Name paramName, Name booleanFieldToSet, boolean shouldReturnThis, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, JCVariableDecl recv, boolean property, String propertyName) {
 		JCExpression returnType = null;
 		JCReturn returnStatement = null;
 		if (shouldReturnThis) {
@@ -220,22 +224,32 @@ public class HandleSetter extends JavacAnnotationHandler<Setter> {
 			returnStatement = treeMaker.Return(treeMaker.Ident(field.toName("this")));
 		}
 		
-		JCMethodDecl d = createSetterWithRecv(access, deprecate, field, treeMaker, setterName, paramName, booleanFieldToSet, returnType, returnStatement, source, onMethod, onParam, recv);
+		JCMethodDecl d = createSetterWithRecv(access, deprecate, field, treeMaker, setterName, paramName, booleanFieldToSet, returnType, returnStatement, source, onMethod, onParam, recv, property, propertyName);
 		return d;
 	}
 	
-	public static JCMethodDecl createSetter(long access, boolean deprecate, JavacNode field, JavacTreeMaker treeMaker, String setterName, Name paramName, Name booleanFieldToSet, JCExpression methodType, JCStatement returnStatement, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam) {
-		return createSetterWithRecv(access, deprecate, field, treeMaker, setterName, paramName, booleanFieldToSet, methodType, returnStatement, source, onMethod, onParam, null);
+	public static JCMethodDecl createSetter(long access, boolean deprecate, JavacNode field, JavacTreeMaker treeMaker, String setterName, Name paramName, Name booleanFieldToSet, JCExpression methodType, JCStatement returnStatement, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, boolean property, String propertyName) {
+		return createSetterWithRecv(access, deprecate, field, treeMaker, setterName, paramName, booleanFieldToSet, methodType, returnStatement, source, onMethod, onParam, null, property, propertyName);
 	}
 	
-	public static JCMethodDecl createSetterWithRecv(long access, boolean deprecate, JavacNode field, JavacTreeMaker treeMaker, String setterName, Name paramName, Name booleanFieldToSet, JCExpression methodType, JCStatement returnStatement, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, JCVariableDecl recv) {
+	public static JCMethodDecl createSetterWithRecv(long access, boolean deprecate, JavacNode field, JavacTreeMaker treeMaker, String setterName, Name paramName, Name booleanFieldToSet, JCExpression methodType, JCStatement returnStatement, JavacNode source, List<JCAnnotation> onMethod, List<JCAnnotation> onParam, JCVariableDecl recv, boolean property, String propertyName) {
 		if (setterName == null) return null;
 		
 		JCVariableDecl fieldDecl = (JCVariableDecl) field.get();
 		if (paramName == null) paramName = fieldDecl.name;
 		
 		JCExpression fieldRef = createFieldAccessor(treeMaker, field, FieldAccess.ALWAYS_FIELD);
-		JCAssign assign = treeMaker.Assign(fieldRef, treeMaker.Ident(paramName));
+		JCExpression assign = null;
+		if (property) {
+         CharSequence propName = propertyName.isEmpty()? removePrefixFromField(field).toString() : propertyName;
+			assign = treeMaker.Apply(List.<JCExpression>nil(),
+					chainDots(field, "this", "firePropertyChange"),
+					List.of(treeMaker.Literal(propName),
+							  treeMaker.Select(treeMaker.Ident(field.toName("this")), fieldDecl.name),
+							  treeMaker.Assign(fieldRef, treeMaker.Ident(paramName))));
+		} else {
+			assign = treeMaker.Assign(fieldRef, treeMaker.Ident(paramName));
+		}
 		
 		ListBuffer<JCStatement> statements = new ListBuffer<JCStatement>();
 		List<JCAnnotation> copyableAnnotations = findCopyableAnnotations(field);

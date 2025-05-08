@@ -83,7 +83,10 @@ public @interface Setter {
 	 * @return List of annotations to apply to the generated parameter in the setter method.
 	 */
 	AnyAnnotation[] onParam() default {};
-	
+
+	boolean property() default false;
+
+	String propertyName() default "";
 	/**
 	  * Placeholder annotation to enable the placement of annotations on the generated code.
 	  * @deprecated Don't use this annotation, ever - Read the documentation.
