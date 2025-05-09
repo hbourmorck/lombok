@@ -27,6 +27,7 @@ import static lombok.eclipse.handlers.EclipseHandlerUtil.*;
 
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
@@ -45,19 +46,25 @@ import org.eclipse.jdt.internal.compiler.ast.ASTNode;
 import org.eclipse.jdt.internal.compiler.ast.Annotation;
 import org.eclipse.jdt.internal.compiler.ast.Argument;
 import org.eclipse.jdt.internal.compiler.ast.Assignment;
+import org.eclipse.jdt.internal.compiler.ast.CharLiteral;
 import org.eclipse.jdt.internal.compiler.ast.Expression;
 import org.eclipse.jdt.internal.compiler.ast.FieldDeclaration;
+import org.eclipse.jdt.internal.compiler.ast.MessageSend;
 import org.eclipse.jdt.internal.compiler.ast.MethodDeclaration;
 import org.eclipse.jdt.internal.compiler.ast.NameReference;
+import org.eclipse.jdt.internal.compiler.ast.ReferenceExpression;
 import org.eclipse.jdt.internal.compiler.ast.ReturnStatement;
 import org.eclipse.jdt.internal.compiler.ast.SingleNameReference;
 import org.eclipse.jdt.internal.compiler.ast.Statement;
+import org.eclipse.jdt.internal.compiler.ast.StringLiteral;
 import org.eclipse.jdt.internal.compiler.ast.ThisReference;
 import org.eclipse.jdt.internal.compiler.ast.TrueLiteral;
 import org.eclipse.jdt.internal.compiler.ast.TypeDeclaration;
 import org.eclipse.jdt.internal.compiler.ast.TypeReference;
 import org.eclipse.jdt.internal.compiler.classfmt.ClassFileConstants;
+import org.eclipse.jdt.internal.compiler.lookup.MethodBinding;
 import org.eclipse.jdt.internal.compiler.lookup.TypeIds;
+import org.eclipse.jdt.internal.corext.callhierarchy.MethodCall;
 
 /**
  * Handles the {@code lombok.Setter} annotation for eclipse.
@@ -66,7 +73,7 @@ import org.eclipse.jdt.internal.compiler.lookup.TypeIds;
 public class HandleSetter extends EclipseAnnotationHandler<Setter> {
 	private static final String SETTER_NODE_NOT_SUPPORTED_ERR = "@Setter is only supported on a class or a field.";
 	
-	public boolean generateSetterForType(EclipseNode typeNode, EclipseNode pos, AccessLevel level, boolean checkForTypeLevelSetter, List<Annotation> onMethod, List<Annotation> onParam) {
+	public boolean generateSetterForType(EclipseNode typeNode, EclipseNode pos, AccessLevel level, boolean checkForTypeLevelSetter, List<Annotation> onMethod, List<Annotation> onParam, boolean property, String propertyName) {
 		if (checkForTypeLevelSetter) {
 			if (hasAnnotation(Setter.class, typeNode)) {
 				//The annotation will make it happen, so we can skip it.
@@ -87,7 +94,7 @@ public class HandleSetter extends EclipseAnnotationHandler<Setter> {
 			//Skip final fields.
 			if ((fieldDecl.modifiers & ClassFileConstants.AccFinal) != 0) continue;
 			
-			generateSetterForField(field, pos, level, onMethod, onParam);
+			generateSetterForField(field, pos, level, onMethod, onParam, property, propertyName);
 		}
 		return true;
 	}
@@ -104,12 +111,12 @@ public class HandleSetter extends EclipseAnnotationHandler<Setter> {
 	 * If not, the setter is still generated if it isn't already there, though there will not
 	 * be a warning if its already there. The default access level is used.
 	 */
-	public void generateSetterForField(EclipseNode fieldNode, EclipseNode sourceNode, AccessLevel level, List<Annotation> onMethod, List<Annotation> onParam) {
+	public void generateSetterForField(EclipseNode fieldNode, EclipseNode sourceNode, AccessLevel level, List<Annotation> onMethod, List<Annotation> onParam, boolean property, String propertyName) {
 		if (hasAnnotation(Setter.class, fieldNode)) {
 			//The annotation will make it happen, so we can skip it.
 			return;
 		}
-		createSetterForField(level, fieldNode, sourceNode, false, onMethod, onParam);
+		createSetterForField(level, fieldNode, sourceNode, false, onMethod, onParam, property, propertyName);
 	}
 	
 	@Override public void handle(AnnotationValues<Setter> annotation, Annotation ast, EclipseNode annotationNode) {
@@ -127,71 +134,83 @@ public class HandleSetter extends EclipseAnnotationHandler<Setter> {
 		if (!onParam.isEmpty()) {
 			handleFlagUsage(annotationNode, ConfigurationKeys.ON_X_FLAG_USAGE, "@Setter(onParam=...)");
 		}
+
+		boolean property = annotation.getInstance().property();
+		String propertyName = annotation.getInstance().propertyName();
 		
 		switch (node.getKind()) {
 		case FIELD:
-			createSetterForFields(level, annotationNode.upFromAnnotationToFields(), annotationNode, true, onMethod, onParam);
+			createSetterForFields(level, annotationNode.upFromAnnotationToFields(), annotationNode, true, onMethod, onParam, property, propertyName);
 			break;
 		case TYPE:
-			generateSetterForType(node, annotationNode, level, false, onMethod, onParam);
+			generateSetterForType(node, annotationNode, level, false, onMethod, onParam, property, "");
 			break;
 		}
 	}
 	
-	public void createSetterForFields(AccessLevel level, Collection<EclipseNode> fieldNodes, EclipseNode sourceNode, boolean whineIfExists, List<Annotation> onMethod, List<Annotation> onParam) {
+	public void createSetterForFields(AccessLevel level, Collection<EclipseNode> fieldNodes, EclipseNode sourceNode, boolean whineIfExists, List<Annotation> onMethod, List<Annotation> onParam, boolean property, String propertyName) {
 		for (EclipseNode fieldNode : fieldNodes) {
-			createSetterForField(level, fieldNode, sourceNode, whineIfExists, onMethod, onParam);
+			createSetterForField(level, fieldNode, sourceNode, whineIfExists, onMethod, onParam, property, propertyName);
 		}
 	}
-	
+
 	public void createSetterForField(
 			AccessLevel level, EclipseNode fieldNode, EclipseNode sourceNode,
 			boolean whineIfExists, List<Annotation> onMethod,
-			List<Annotation> onParam) {
-		
+			List<Annotation> onParam, boolean property, String propertyName)
+	{
+
 		ASTNode source = sourceNode.get();
-		if (fieldNode.getKind() != Kind.FIELD) {
+		if (fieldNode.getKind() != Kind.FIELD)
+		{
 			sourceNode.addError(SETTER_NODE_NOT_SUPPORTED_ERR);
 			return;
 		}
-		
+
 		FieldDeclaration field = (FieldDeclaration) fieldNode.get();
 		TypeReference fieldType = copyType(field.type, source);
 		boolean isBoolean = isBoolean(fieldType);
 		AnnotationValues<Accessors> accessors = getAccessorsForField(fieldNode);
 		String setterName = toSetterName(fieldNode, isBoolean, accessors);
 		boolean shouldReturnThis = shouldReturnThis(fieldNode, accessors);
-		
-		if (setterName == null) {
+
+		if (setterName == null)
+		{
 			fieldNode.addWarning("Not generating setter for this field: It does not fit your @Accessors prefix list.");
 			return;
 		}
-		
+
 		int modifier = toEclipseModifier(level) | (field.modifiers & ClassFileConstants.AccStatic);
-		
-		for (String altName : toAllSetterNames(fieldNode, isBoolean, accessors)) {
-			switch (methodExists(altName, fieldNode, false, 1)) {
-			case EXISTS_BY_LOMBOK:
-				return;
-			case EXISTS_BY_USER:
-				if (whineIfExists) {
-					String altNameExpl = "";
-					if (!altName.equals(setterName)) altNameExpl = String.format(" (%s)", altName);
-					fieldNode.addWarning(
-						String.format("Not generating %s(): A method with that name already exists%s", setterName, altNameExpl));
-				}
-				return;
-			default:
-			case NOT_EXISTS:
-				//continue scanning the other alt names.
+
+		for (String altName : toAllSetterNames(fieldNode, isBoolean, accessors))
+		{
+			switch (methodExists(altName, fieldNode, false, 1))
+			{
+				case EXISTS_BY_LOMBOK:
+					return;
+				case EXISTS_BY_USER:
+					if (whineIfExists)
+					{
+						String altNameExpl = "";
+						if (!altName.equals(setterName))
+						{
+							altNameExpl = String.format(" (%s)", altName);
+						}
+						fieldNode.addWarning(
+								String.format("Not generating %s(): A method with that name already exists%s", setterName, altNameExpl));
+					}
+					return;
+				default:
+				case NOT_EXISTS:
+					//continue scanning the other alt names.
 			}
 		}
-		
-		MethodDeclaration method = createSetter((TypeDeclaration) fieldNode.up().get(), false, fieldNode, setterName, null, null, shouldReturnThis, modifier, sourceNode, onMethod, onParam);
+
+		MethodDeclaration method = createSetter((TypeDeclaration) fieldNode.up().get(), false, fieldNode, setterName, null, null, shouldReturnThis, modifier, sourceNode, onMethod, onParam, property, propertyName);
 		injectMethod(fieldNode.up(), method);
 	}
 
-	static MethodDeclaration createSetter(TypeDeclaration parent, boolean deprecate, EclipseNode fieldNode, String name, char[] paramName, char[] booleanFieldToSet, boolean shouldReturnThis, int modifier, EclipseNode sourceNode, List<Annotation> onMethod, List<Annotation> onParam) {
+	static MethodDeclaration createSetter(TypeDeclaration parent, boolean deprecate, EclipseNode fieldNode, String name, char[] paramName, char[] booleanFieldToSet, boolean shouldReturnThis, int modifier, EclipseNode sourceNode, List<Annotation> onMethod, List<Annotation> onParam, boolean property, String propertyName) {
 		ASTNode source = sourceNode.get();
 		int pS = source.sourceStart, pE = source.sourceEnd;
 		
@@ -204,11 +223,11 @@ public class HandleSetter extends EclipseAnnotationHandler<Setter> {
 			returnThis = new ReturnStatement(thisRef, pS, pE);
 		}
 		
-		MethodDeclaration d = createSetter(parent, deprecate, fieldNode, name, paramName, booleanFieldToSet, returnType, returnThis, modifier, sourceNode, onMethod, onParam);
+		MethodDeclaration d = createSetter(parent, deprecate, fieldNode, name, paramName, booleanFieldToSet, returnType, returnThis, modifier, sourceNode, onMethod, onParam, property, propertyName);
 		return d;
 	}
 	
-	static MethodDeclaration createSetter(TypeDeclaration parent, boolean deprecate, EclipseNode fieldNode, String name, char[] paramName, char[] booleanFieldToSet, TypeReference returnType, Statement returnStatement, int modifier, EclipseNode sourceNode, List<Annotation> onMethod, List<Annotation> onParam) {
+	static MethodDeclaration createSetter(TypeDeclaration parent, boolean deprecate, EclipseNode fieldNode, String name, char[] paramName, char[] booleanFieldToSet, TypeReference returnType, Statement returnStatement, int modifier, EclipseNode sourceNode, List<Annotation> onMethod, List<Annotation> onParam, boolean property, String propertyName) {
 		FieldDeclaration field = (FieldDeclaration) fieldNode.get();
 		if (paramName == null) paramName = field.name;
 		ASTNode source = sourceNode.get();
@@ -239,7 +258,26 @@ public class HandleSetter extends EclipseAnnotationHandler<Setter> {
 		method.bits |= ECLIPSE_DO_NOT_TOUCH_FLAG;
 		Expression fieldRef = createFieldAccessor(fieldNode, FieldAccess.ALWAYS_FIELD, source);
 		NameReference fieldNameRef = new SingleNameReference(paramName, p);
-		Assignment assignment = new Assignment(fieldRef, fieldNameRef, (int) p);
+		Expression assignment;
+		if (property)
+		{
+			char[] propName = propertyName.isEmpty()? removePrefixFromField(fieldNode) : propertyName.toCharArray();
+			MessageSend firePropertyChangeCall = new MessageSend();
+			setGeneratedBy(firePropertyChangeCall, source);
+			firePropertyChangeCall.receiver = new ThisReference(pS, pE);
+			firePropertyChangeCall.selector = "firePropertyChange".toCharArray();
+			firePropertyChangeCall.arguments = new Expression[] {
+					new StringLiteral(propName, pS, pE, (int) p),
+					createFieldAccessor(fieldNode, FieldAccess.ALWAYS_FIELD, source),
+					new Assignment(fieldRef, fieldNameRef, (int) p)
+			};
+			assignment = firePropertyChangeCall;
+		}
+		else
+		{
+			assignment = new Assignment(fieldRef, fieldNameRef, (int) p);
+		}
+
 		assignment.sourceStart = pS; assignment.sourceEnd = assignment.statementEnd = pE;
 		method.bodyStart = method.declarationSourceStart = method.sourceStart = source.sourceStart;
 		method.bodyEnd = method.declarationSourceEnd = method.sourceEnd = source.sourceEnd;
